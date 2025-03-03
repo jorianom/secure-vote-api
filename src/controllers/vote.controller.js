@@ -41,6 +41,33 @@ exports.vote = async (req, res) => {
     }
 };
 
+exports.hasVoted = async (req, res) => {
+    const { voterId } = req.params;
+
+    try {
+        // Buscar si el usuario ya tiene un voto registrado
+        const { data, error } = await supabase
+            .from("votes")
+            .select("id")
+            .eq("voter_id", voterId)
+            .single();
+        console.log("data", data);
+        console.log("error", error);
+        if (error && error.code !== "PGRST116") { // PGRST116 = No encontrado en Supabase
+            return res.status(500).json({ error: "Error al consultar la base de datos." });
+        }
+
+        if (data) {
+            return res.json({ hasVoted: true, message: "El usuario ya votó." });
+        } else {
+            return res.json({ hasVoted: false, message: "El usuario aún no ha votado." });
+        }
+    } catch (err) {
+        console.error("Error en /has-voted:", err);
+        res.status(500).json({ error: "Error interno del servidor." });
+    }
+};
+
 
 exports.verifyVote = async (req, res) => {
     const { document_number, candidate, signature } = req.body;
@@ -75,4 +102,54 @@ exports.verifyVote = async (req, res) => {
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
+};
+
+
+exports.countVotes = async (req, res) => {
+    try {
+        // 🔹 Obtener todos los votos
+        const { data, error } = await supabase
+            .from("votes")
+            .select("candidate");
+
+        if (error) {
+            console.error("❌ Error consultando votos:", error);
+            return res.status(500).json({ error: "Error al contar los votos." });
+        }
+
+        // 🔹 Contar los votos manualmente agrupando por candidato
+        const voteCount = data.reduce((acc, vote) => {
+            acc[vote.candidate] = (acc[vote.candidate] || 0) + 1;
+            return acc;
+        }, {});
+
+        // 🔹 Formatear la respuesta con nombres e imágenes
+        const formattedData = Object.entries(voteCount).map(([candidate, votes]) => ({
+            id: candidate,
+            name: getCandidateName(candidate),
+            image: getCandidateImage(candidate),
+            votes,
+        }));
+
+        res.json(formattedData);
+    } catch (err) {
+        console.error("❌ Error interno en /count-votes:", err);
+        res.status(500).json({ error: "Error interno del servidor." });
+    }
+};
+
+// 🔹 Función auxiliar para asignar nombres a los candidatos
+const getCandidateName = (candidateId) => {
+    const candidates = {
+        candidato1: "María García",
+        candidato2: "Carlos Rodríguez",
+        candidato3: "Ana Fernández",
+        candidato4: "Luis Martínez",
+    };
+    return candidates[candidateId] || "Desconocido";
+};
+
+// 🔹 Función auxiliar para asignar imágenes a los candidatos
+const getCandidateImage = (candidateId) => {
+    return `https://picsum.photos/200/200?random=${candidateId}`;
 };

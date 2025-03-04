@@ -145,7 +145,7 @@ exports.vote = async (req, res) => {
     res.status(400).json({
       error:
         error.message.includes("duplicate key") ||
-        error.message.includes("ya existe")
+          error.message.includes("ya existe")
           ? "Voto duplicado detectado"
           : error.message,
     });
@@ -162,7 +162,7 @@ exports.hasVoted = async (req, res) => {
     // 🔹 Buscar si el usuario ya ha votado y traer más datos del voto
     const { data, error } = await supabase
       .from("votes")
-      .select("id, candidate, signature, created_at") // ✅ Agregamos más columnas
+      .select("id, transaction_id, signature, created_at, r, s, users(document_number)") // ✅ Agregamos `document_number` desde `users`
       .eq("voter_id", voterId)
       .single();
 
@@ -177,9 +177,12 @@ exports.hasVoted = async (req, res) => {
         message: "✅ El usuario ya votó.",
         vote: {
           id: data.id,
-          candidate: data.candidate,
+          r: data.r,
+          s: data.s,
+          transaction_id: data.transaction_id,
           signature: data.signature,
           created_at: data.created_at,
+          document_number: data.users?.document_number,
         },
       });
     } else {

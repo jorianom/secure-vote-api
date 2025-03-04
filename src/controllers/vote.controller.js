@@ -33,27 +33,27 @@ function decrypt(encryptedData) {
  * Permite UN SOLO voto por usuario (valida en la tabla 'votes' que no exista uno previo).
  */
 exports.vote = async (req, res) => {
-  const { document_number, candidate } = req.body;
+  const { userId, candidate } = req.body;
 
   // Validación rápida de campos
-  if (!document_number || !candidate) {
+  if (!userId || !candidate) {
     return res.status(400).json({ error: "Datos incompletos" });
   }
 
-  // Bloquear solicitudes concurrentes para el mismo document_number
-  if (voteLocks.has(document_number)) {
+  // Bloquear solicitudes concurrentes para el mismo userId
+  if (voteLocks.has(userId)) {
     return res
       .status(429)
       .json({ error: "Voto en proceso. Intente nuevamente." });
   }
-  voteLocks.set(document_number, true);
+  voteLocks.set(userId, true);
 
   try {
     // 1. Obtener el usuario por documento
     const { data: user, error: userError } = await supabase
       .from("users")
       .select("*")
-      .eq("document_number", document_number)
+      .eq("id", userId)
       .single(); // single() -> Lanza error si no hay registros
 
     if (userError || !user) {
@@ -125,7 +125,7 @@ exports.vote = async (req, res) => {
     });
   } finally {
     // Liberar el bloqueo
-    voteLocks.delete(document_number);
+    voteLocks.delete(userId);
   }
 };
 
@@ -133,25 +133,34 @@ exports.hasVoted = async (req, res) => {
   const { voterId } = req.params;
 
   try {
-    // Buscar si el usuario ya tiene un voto registrado
+    // 🔹 Buscar si el usuario ya ha votado y traer más datos del voto
     const { data, error } = await supabase
       .from("votes")
-      .select("id")
+      .select("id, candidate, signature, created_at") // ✅ Agregamos más columnas
       .eq("voter_id", voterId)
       .single();
-    console.log("data", data);
-    console.log("error", error);
+
     if (error && error.code !== "PGRST116") { // PGRST116 = No encontrado en Supabase
+      console.error("❌ Error al consultar la base de datos:", error);
       return res.status(500).json({ error: "Error al consultar la base de datos." });
     }
 
     if (data) {
-      return res.json({ hasVoted: true, message: "El usuario ya votó." });
+      return res.json({
+        hasVoted: true,
+        message: "✅ El usuario ya votó.",
+        vote: {
+          id: data.id,
+          candidate: data.candidate,
+          signature: data.signature,
+          created_at: data.created_at,
+        },
+      });
     } else {
-      return res.json({ hasVoted: false, message: "El usuario aún no ha votado." });
+      return res.json({ hasVoted: false, message: "⚠️ El usuario aún no ha votado." });
     }
   } catch (err) {
-    console.error("Error en /has-voted:", err);
+    console.error("❌ Error en /has-voted:", err);
     res.status(500).json({ error: "Error interno del servidor." });
   }
 };

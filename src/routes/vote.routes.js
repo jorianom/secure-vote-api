@@ -15,6 +15,6 @@ router.get("/has-voted/:voterId", hasVoted);
 router.get("/count", countVotes);
 // router.post("/vote", vote);
 router.post("/verify", authenticateToken, verifyVote);
-router.post("/verifyVote", authenticateToken, verify);
+router.post("/verifyVote", verify);
 
 module.exports = router;

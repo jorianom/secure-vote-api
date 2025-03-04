@@ -6,7 +6,7 @@ const jwt = require("jsonwebtoken");
 // SECRET_KEY para JWT (asegúrate de definirla en .env)
 const jwtSecret = process.env.JWT_SECRET;
 
-// La clave secreta de 32 bytes (256 bits) en formato hexadecimal, definida en tus variables de entorno.
+// La clave secreta de 32 bytes (256 bits) en formato hexadecimal (para cifrar la clave privada)
 const secretKey = Buffer.from(process.env.SECRET_KEY, "hex");
 
 // Función para cifrar la clave privada usando AES-256-GCM
@@ -29,7 +29,7 @@ function encrypt(text) {
 exports.registerUser = async (req, res) => {
   console.log("registerUser");
 
-  // Ahora esperamos 'password' además de los demás campos
+  // Esperamos 'password' además de los demás campos
   const { name, document_type, document_number, password } = req.body;
 
   // Validar que todos los campos requeridos estén presentes
@@ -78,21 +78,23 @@ exports.registerUser = async (req, res) => {
 };
 
 exports.login = async (req, res) => {
-  const { document_number, password } = req.body;
+  const { document_number, document_type, password } = req.body;
 
-  // Validar que se ingresaron ambos campos
-  if (!document_number || !password) {
+  // Validar que se ingresaron los 3 campos
+  if (!document_number || !document_type || !password) {
     return res.status(400).json({ error: "Datos incompletos" });
   }
 
   try {
-    // 1. Buscar al usuario por número de documento
+    // 1. Buscar al usuario que coincida con document_number y document_type
     const { data: user, error: userError } = await supabase
       .from("users")
-      .select("id, password")
+      .select("id, name, document_type, password")
       .eq("document_number", document_number)
+      .eq("document_type", document_type)
       .single();
 
+    // Si no existe o hay error, retornamos que las credenciales son incorrectas
     if (userError || !user) {
       return res
         .status(401)
@@ -114,7 +116,15 @@ exports.login = async (req, res) => {
       { expiresIn: "1h" } // Expira en 1 hora
     );
 
-    res.json({ message: "Inicio de sesión exitoso", token });
+    // 4. Devolver token, ID y nombre del usuario
+    res.json({
+      message: "Inicio de sesión exitoso",
+      token,
+      user: {
+        id: user.id,
+        name: user.name,
+      },
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

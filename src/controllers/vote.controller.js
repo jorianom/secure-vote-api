@@ -2,12 +2,27 @@
 
 const supabase = require("../config/supabase");
 const crypto = require("crypto");
+const asn1 = require("asn1.js");
 
 // Leemos SECRET_KEY (asegúrate de haber hecho require('dotenv').config() en tu index.js)
 const secretKey = Buffer.from(process.env.SECRET_KEY, "hex");
 
 // Map para bloquear llamadas concurrentes por documento (opcional)
 const voteLocks = new Map();
+
+const DSASignature = asn1.define("DSASignature", function () {
+  this.seq().obj(this.key("r").int(), this.key("s").int());
+});
+
+function encodeSignature(rHex, sHex) {
+  // rHex y sHex son strings en hex
+  const BN = require("bn.js"); // Librería para big numbers (asn1.js la usa internamente)
+  const rBN = new BN(rHex, 16);
+  const sBN = new BN(sHex, 16);
+
+  // Usamos DSASignature.encode para crear el DER
+  return DSASignature.encode({ r: rBN, s: sBN }, "der");
+}
 
 /**
  * Descifra la clave privada usando AES-256-GCM
@@ -63,17 +78,14 @@ exports.vote = async (req, res) => {
     // 2. Verificar si ya existe un voto del usuario
     const { data: existingVote, error: existingVoteError } = await supabase
       .from("votes")
-      .select("id") // solo necesitamos el id para saber si hay voto
+      .select("id")
       .eq("voter_id", user.id)
       .maybeSingle();
-    // maybeSingle() -> no lanza error si no encuentra filas, solo retorna null
 
     if (existingVoteError) {
-      // Si hay un error que NO sea simplemente "no encontró filas", lo lanzamos
       throw existingVoteError;
     }
 
-    // Si existingVote NO es null, entonces sí hay voto previo
     if (existingVote) {
       throw new Error("El usuario ya ha votado");
     }
@@ -91,35 +103,49 @@ exports.vote = async (req, res) => {
       type: "pkcs8",
     });
 
-    const signature = sign.sign(privateKeyObj, "hex");
+    // Firma en formato DER (Buffer)
+    const signatureBuffer = sign.sign(privateKeyObj);
 
-    // 4. Insertar el voto en la tabla 'votes'
+    // Convertir la firma a hex para guardarla en la BD
+    const signatureHex = signatureBuffer.toString("hex");
+
+    // EXTRAER r, s de la firma DER (opcional, si deseas exponerlos)
+    const { r, s } = DSASignature.decode(signatureBuffer, "der");
+
+    // 4. Generar un transaction_id robusto (32 hex chars)
+    const transactionId = crypto.randomBytes(16).toString("hex");
+
+    // 5. Insertar el voto en la tabla 'votes'
     const { error: insertVoteError } = await supabase.from("votes").insert([
       {
         voter_id: user.id,
         candidate: candidate,
-        signature: signature,
+        signature: signatureHex,
+        transaction_id: transactionId,
         created_at: new Date().toISOString(),
+        r: r,
+        s: s,
       },
     ]);
 
     if (insertVoteError) {
-      // Podría ser un error de clave duplicada u otro
       throw insertVoteError;
     }
 
-    // 5. Responder OK
+    // 6. Responder OK (incluyendo transaction_id, r, s)
     res.json({
       message: "Voto registrado exitosamente",
       candidate,
-      signature,
+      signature: signatureHex,
+      transaction_id: transactionId,
+      r: r.toString(16),
+      s: s.toString(16),
     });
   } catch (error) {
-    // Controlamos mensajes de error
     res.status(400).json({
       error:
         error.message.includes("duplicate key") ||
-          error.message.includes("ya existe")
+        error.message.includes("ya existe")
           ? "Voto duplicado detectado"
           : error.message,
     });
@@ -165,12 +191,11 @@ exports.hasVoted = async (req, res) => {
   }
 };
 
-
 exports.verifyVote = async (req, res) => {
-  const { document_number, candidate, signature } = req.body;
+  const { document_number, candidate, r, s } = req.body;
 
   try {
-    // 1. Obtener la clave pública según el document_number
+    // 1. Obtener la clave pública del usuario
     const { data: user, error: userError } = await supabase
       .from("users")
       .select("id, public_key")
@@ -181,7 +206,10 @@ exports.verifyVote = async (req, res) => {
       throw new Error("Usuario no encontrado");
     }
 
-    // 2. Verificar la firma
+    // 2. Reconstruir la firma DER a partir de r, s
+    const derSignature = encodeSignature(r, s);
+
+    // 3. Configurar verificación con SHA256
     const verify = crypto.createVerify("SHA256");
     verify.update(candidate);
     verify.end();
@@ -192,14 +220,17 @@ exports.verifyVote = async (req, res) => {
       type: "spki",
     });
 
-    const isSignatureValid = verify.verify(publicKeyObj, signature, "hex");
+    // 4. Verificar la firma DER
+    const isSignatureValid = verify.verify(publicKeyObj, derSignature);
 
-    // 3. Verificar concordancia con la BD (que esa signature exista para voter_id)
+    // 5. (Opcional) Verificar que r, s correspondan a un voto guardado
+    //    Por ejemplo, si en tu DB guardaste r, s junto con el voto
     const { data: storedVote, error: storedVoteError } = await supabase
       .from("votes")
       .select("*")
       .eq("voter_id", user.id)
-      .eq("signature", signature)
+      .eq("r", r) // si tienes columna r
+      .eq("s", s) // si tienes columna s
       .maybeSingle();
 
     if (storedVoteError) {
@@ -220,13 +251,10 @@ exports.verifyVote = async (req, res) => {
   }
 };
 
-
 exports.countVotes = async (req, res) => {
   try {
     // 🔹 Obtener todos los votos
-    const { data, error } = await supabase
-      .from("votes")
-      .select("candidate");
+    const { data, error } = await supabase.from("votes").select("candidate");
 
     if (error) {
       console.error("❌ Error consultando votos:", error);
@@ -240,12 +268,14 @@ exports.countVotes = async (req, res) => {
     }, {});
 
     // 🔹 Formatear la respuesta con nombres e imágenes
-    const formattedData = Object.entries(voteCount).map(([candidate, votes]) => ({
-      id: candidate,
-      name: getCandidateName(candidate),
-      image: getCandidateImage(candidate),
-      votes,
-    }));
+    const formattedData = Object.entries(voteCount).map(
+      ([candidate, votes]) => ({
+        id: candidate,
+        name: getCandidateName(candidate),
+        image: getCandidateImage(candidate),
+        votes,
+      })
+    );
 
     res.json(formattedData);
   } catch (err) {

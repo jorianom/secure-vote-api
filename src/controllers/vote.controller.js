@@ -76,19 +76,19 @@ exports.vote = async (req, res) => {
     }
 
     // 2. Verificar si ya existe un voto del usuario
-    const { data: existingVote, error: existingVoteError } = await supabase
-      .from("votes")
-      .select("id")
-      .eq("voter_id", user.id)
-      .maybeSingle();
+    // const { data: existingVote, error: existingVoteError } = await supabase
+    //   .from("votes")
+    //   .select("id")
+    //   .eq("voter_id", user.id)
+    //   .maybeSingle();
 
-    if (existingVoteError) {
-      throw existingVoteError;
-    }
+    // if (existingVoteError) {
+    //   throw existingVoteError;
+    // }
 
-    if (existingVote) {
-      throw new Error("El usuario ya ha votado");
-    }
+    // if (existingVote) {
+    //   throw new Error("El usuario ya ha votado");
+    // }
 
     // 3. Descifrar la clave privada y firmar el voto
     const decryptedPrivateKey = decrypt(user.private_key);
@@ -118,7 +118,7 @@ exports.vote = async (req, res) => {
     // 5. Insertar el voto en la tabla 'votes'
     const { error: insertVoteError } = await supabase.from("votes").insert([
       {
-        voter_id: user.id,
+        // voter_id: user.id,
         candidate: candidate,
         signature: signatureHex,
         transaction_id: transactionId,

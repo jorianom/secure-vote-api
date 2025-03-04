@@ -6,7 +6,7 @@ function authenticateToken(req, res, next) {
   const token = req.header("Authorization");
 
   if (!token) {
-    return res.status(401).json({ error: "Acceso denegado, token requerido" });
+    return res.status(403).json({ error: "Acceso denegado, token requerido" });
   }
 
   try {

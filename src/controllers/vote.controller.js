@@ -162,16 +162,15 @@ exports.hasVoted = async (req, res) => {
     // 🔹 Buscar si el usuario ya ha votado y traer más datos del voto
     const { data, error } = await supabase
       .from("votes")
-      .select("id, transaction_id, signature, created_at, r, s, users(document_number)") // ✅ Agregamos `document_number` desde `users`
+      .select("id, transaction_id, signature, created_at, r, s, users(document_number, public_key)") // ✅ Agregamos `document_number` desde `users`
       .eq("voter_id", voterId)
       .single();
-
     if (error && error.code !== "PGRST116") { // PGRST116 = No encontrado en Supabase
       console.error("❌ Error al consultar la base de datos:", error);
       return res.status(500).json({ error: "Error al consultar la base de datos." });
     }
-
     if (data) {
+      let public_base64 = Buffer.from(data.users.public_key).toString('base64')
       return res.json({
         hasVoted: true,
         message: "✅ El usuario ya votó.",
@@ -180,6 +179,7 @@ exports.hasVoted = async (req, res) => {
           r: data.r,
           s: data.s,
           transaction_id: data.transaction_id,
+          public_base64: public_base64,
           signature: data.signature,
           created_at: data.created_at,
           document_number: data.users?.document_number,
@@ -204,7 +204,7 @@ exports.verifyVote = async (req, res) => {
       .select("id, public_key")
       .eq("document_number", document_number)
       .single();
-
+    // let candidate = data.candidate
     if (userError || !user) {
       throw new Error("Usuario no encontrado");
     }
@@ -227,7 +227,7 @@ exports.verifyVote = async (req, res) => {
     const isSignatureValid = verify.verify(publicKeyObj, derSignature);
 
     // 5. (Opcional) Verificar que r, s correspondan a un voto guardado
-    //    Por ejemplo, si en tu DB guardaste r, s junto con el voto
+    //    Por ejemplo, si en tu DB se guardo r, s junto con el voto
     const { data: storedVote, error: storedVoteError } = await supabase
       .from("votes")
       .select("*")
@@ -287,18 +287,92 @@ exports.countVotes = async (req, res) => {
   }
 };
 
-// 🔹 Función auxiliar para asignar nombres a los candidatos
+
 const getCandidateName = (candidateId) => {
   const candidates = {
-    candidato1: "María García",
-    candidato2: "Carlos Rodríguez",
-    candidato3: "Ana Fernández",
-    candidato4: "Luis Martínez",
+    candidato1: "Gustavo Bolívar",
+    candidato2: "María Fernanda Cabal",
+    candidato3: "Vicky Dávila",
+    candidato4: "Polo Polo",
   };
   return candidates[candidateId] || "Desconocido";
 };
 
-// 🔹 Función auxiliar para asignar imágenes a los candidatos
+// 🔹 Función auxiliar para obtener la imagen del candidato
 const getCandidateImage = (candidateId) => {
-  return `https://picsum.photos/200/200?random=${candidateId}`;
+  const images = {
+    candidato1: "/images/1.png",
+    candidato2: "/images/2.jpeg",
+    candidato3: "/images/3.png",
+    candidato4: "/images/4.png",
+  };
+  return images[candidateId] || "/images/default.png"; // Imagen por defecto si no hay coincidencia
+};
+
+exports.verify = async (req, res) => {
+  const { r, s, public_base64 } = req.body; // 🔹 Recibe `public_base64`, `r` y `s` del frontend
+
+  try {
+    // 1. Decodificar la clave pública desde Base64 a formato PEM
+    const publicKeyPem = Buffer.from(public_base64, "base64").toString("utf-8");
+
+    // 2. Buscar el usuario en la base de datos a partir de la clave pública
+    const { data: user, error: userError } = await supabase
+      .from("users")
+      .select("id, document_number")
+      .eq("public_key", publicKeyPem)
+      .maybeSingle();
+
+    if (userError) throw new Error(userError.message);
+    if (!user) throw new Error("Usuario no encontrado con la clave pública");
+
+    console.log("Usuario encontrado:", user.document_number);
+
+    // 3. Buscar el voto usando `r` y `s` en la base de datos
+    const { data: voteData, error: voteError } = await supabase
+      .from("votes")
+      .select("candidate, r, s")
+      .eq("r", r)
+      .eq("s", s)
+      .maybeSingle();
+
+    if (voteError) throw new Error(voteError.message);
+    if (!voteData) {
+      return res.json({
+        valid: false,
+        message: "Voto no encontrado o datos de firma incorrectos",
+      });
+    }
+
+    // 4. Extraer el candidato del voto encontrado
+    const candidate = voteData.candidate;
+
+    // 5. Reconstruir la firma DER a partir de r y s
+    const derSignature = encodeSignature(r, s);
+
+    // 6. Configurar la verificación con SHA256
+    const verify = crypto.createVerify("SHA256");
+    verify.update(candidate);
+    verify.end();
+
+    // 7. Crear un objeto de clave pública con la clave decodificada
+    const publicKeyObj = crypto.createPublicKey({
+      key: publicKeyPem,
+      format: "pem",
+      type: "spki",
+    });
+
+    // 8. Verificar la firma
+    const isSignatureValid = verify.verify(publicKeyObj, derSignature);
+
+    return res.json({
+      valid: isSignatureValid,
+      message: isSignatureValid
+        ? "Voto verificado correctamente"
+        : "Firma inválida",
+    });
+  } catch (error) {
+    console.error("Error en /verify-vote:", error);
+    return res.status(500).json({ error: error.message, valid: false });
+  }
 };
